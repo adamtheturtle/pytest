@@ -1671,8 +1671,8 @@ class Function(PyobjMixin, nodes.Item):
         else:
             # Reuse markers already resolved on FunctionDefinition (parametrized path).
             self.own_markers.extend(_obj_markers)
-        if callspec:
-            self.callspec = callspec
+        self.callspec = callspec
+        if callspec is not None:
             self.own_markers.extend(callspec.marks)
 
         # todo: this is a hell of a hack
@@ -1691,8 +1691,9 @@ class Function(PyobjMixin, nodes.Item):
         self._fixtureinfo: FuncFixtureInfo = fixtureinfo
         self.fixturenames = fixtureinfo.names_closure
         # Defer TopRequest creation until setup/run; collection never needs it.
+        # None means uninitialized or cleared after teardown.
         self.funcargs: dict[str, object] = {}
-        self._request_value: fixtures.TopRequest | Literal[False] | None = None
+        self._request: fixtures.TopRequest | None = None
 
     # todo: determine sound type limitations
     @classmethod
@@ -1702,20 +1703,16 @@ class Function(PyobjMixin, nodes.Item):
 
     def _initrequest(self) -> None:
         self.funcargs = {}
-        self._request_value = fixtures.TopRequest(self, _ispytest=True)
+        self._request = fixtures.TopRequest(self, _ispytest=True)
 
-    @property
-    def _request(self) -> fixtures.TopRequest | Literal[False]:
-        value = self._request_value
-        if value is None:
+    def get_request(self) -> fixtures.TopRequest:
+        """Return the fixture request, creating it on first use."""
+        request = self._request
+        if request is None:
             self._initrequest()
-            assert self._request_value is not None and self._request_value is not False
-            return self._request_value
-        return value
-
-    @_request.setter
-    def _request(self, value: fixtures.TopRequest | Literal[False]) -> None:
-        self._request_value = value
+            request = self._request
+            assert request is not None
+        return request
 
     @property
     def function(self):
@@ -1760,7 +1757,7 @@ class Function(PyobjMixin, nodes.Item):
         self.ihook.pytest_pyfunc_call(pyfuncitem=self)
 
     def setup(self) -> None:
-        self._request._fillfixtures()
+        self.get_request()._fillfixtures()
 
     def _traceback_filter(self, excinfo: ExceptionInfo[BaseException]) -> Traceback:
         if hasattr(self, "_obj") and not self.config.getoption("fulltrace", False):
@@ -1806,20 +1803,31 @@ class FunctionDefinition(Function):
     """This class is a stop gap solution until we evolve to have actual function
     definition nodes and manage to get rid of ``metafunc``."""
 
+    # When False, this node is only used as a Metafunc definition and must not
+    # be executed. as_function() sets this to True to reuse the same node as
+    # the collected Function item without constructing a second Function.
+    _runnable: bool = False
+
     def _initrequest(self) -> None:
-        # FunctionDefinition is never executed as a test; skip creating TopRequest.
-        self.funcargs = {}
-        self._request_value = False
+        if not self._runnable:
+            # Definition-only nodes never execute; keep request unset.
+            self.funcargs = {}
+            self._request = None
+            return
+        super()._initrequest()
 
     def as_function(self) -> Function:
-        """Promote this definition to a runnable :class:`Function`.
+        """Mark this definition as the runnable Function item.
 
         Used when a test has a single (non-parametrized) invocation, so we can
         reuse this node instead of constructing a second Function.
+
+        Since :class:`FunctionDefinition` is a :class:`Function` subclass,
+        returning ``self`` is type-safe without mutating ``__class__``.
         """
-        self.__class__ = Function
+        self._runnable = True
         # Keep deferred request initialization used by Function.
-        self._request_value = None
+        self._request = None
         # FunctionDefinition was constructed with callobj=raw function. Clear
         # cached obj/instance so method tests bind to a fresh class instance
         # via Function._getobj(), matching a normally constructed Function.
@@ -1827,7 +1835,22 @@ class FunctionDefinition(Function):
         self.__dict__.pop("_instance", None)
         return self
 
-    def runtest(self) -> None:
-        raise RuntimeError("function definitions are not supposed to be run as tests")
+    def __repr__(self) -> str:
+        # Collection trees and --collect-only output expect "<Function ...>"
+        # for runnable items.
+        cls_name = "Function" if self._runnable else self.__class__.__name__
+        return f"<{cls_name} {getattr(self, 'name', None)}>"
 
-    setup = runtest
+    def runtest(self) -> None:
+        if not self._runnable:
+            raise RuntimeError(
+                "function definitions are not supposed to be run as tests"
+            )
+        super().runtest()
+
+    def setup(self) -> None:
+        if not self._runnable:
+            raise RuntimeError(
+                "function definitions are not supposed to be run as tests"
+            )
+        super().setup()

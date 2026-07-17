@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import sys
 import types
-from typing import cast
 
 from _pytest import outcomes
 from _pytest import reports
@@ -513,7 +512,8 @@ class TestExecutionNonForked(BaseFunctionalTests):
         """
         )
         assert isinstance(item, pytest.Function)
-        assert item._request
+        # Request is deferred until setup/run.
+        assert item._request is None
         assert item.funcargs == {}
 
         try:
@@ -523,7 +523,7 @@ class TestExecutionNonForked(BaseFunctionalTests):
         else:
             assert False, "did not raise"
 
-        assert not cast(object, item._request)
+        assert item._request is None
         assert not item.funcargs
 
 

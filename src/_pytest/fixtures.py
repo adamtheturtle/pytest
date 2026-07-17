@@ -226,9 +226,10 @@ def get_param_argkeys(item: nodes.Item, scope: Scope) -> Iterator[ParamArgKey]:
     """Return all ParamArgKeys for item matching the specified high scope."""
     assert scope is not Scope.Function
 
-    try:
-        callspec: CallSpec2 = item.callspec  # type: ignore[attr-defined]
-    except AttributeError:
+    # ``pytest_collection_modifyitems`` may run with collectors when
+    # ``genitems=False``; only Items declare ``callspec``.
+    callspec = getattr(item, "callspec", None)
+    if callspec is None:
         return
 
     item_cls = None
@@ -241,7 +242,8 @@ def get_param_argkeys(item: nodes.Item, scope: Scope) -> Iterator[ParamArgKey]:
         scoped_item_path = item.path
     elif scope is Scope.Class:
         scoped_item_path = item.path
-        item_cls = item.cls  # type: ignore[attr-defined]
+        raw_cls = getattr(item, "cls", None)
+        item_cls = raw_cls if isinstance(raw_cls, type) else None
     else:
         assert_never(scope)
 
@@ -257,9 +259,9 @@ def reorder_items(items: Sequence[nodes.Item]) -> list[nodes.Item]:
     # affect collection order, so skip building argkey maps and the O(n)
     # reordering algorithm.
     for item in items:
-        try:
-            callspec: CallSpec2 = item.callspec  # type: ignore[attr-defined]
-        except AttributeError:
+        # May be a Collector when collection runs with genitems=False.
+        callspec = getattr(item, "callspec", None)
+        if callspec is None:
             continue
         if any(scope is not Scope.Function for scope in callspec._arg2scope.values()):
             break

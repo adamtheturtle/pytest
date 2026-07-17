@@ -626,7 +626,7 @@ class Session(nodes.Collector):
         # Cache gethookproxy() results; invalidated when new conftests load
         # (see _hookproxy_generation). Previously caching was removed (#2016)
         # because it did not invalidate; generation-based caching is correct.
-        self._hookproxy_cache: dict[Path, pluggy.HookRelay] = {}
+        self._hookproxy_cache: dict[Path, pluggy.HookRelay | FSHookProxy] = {}
         self._hookproxy_generation: int = -1
 
         self.config.pluginmanager.register(self, name="session")
@@ -733,7 +733,7 @@ class Session(nodes.Collector):
         else:
             return path_ in self._initialpaths
 
-    def gethookproxy(self, fspath: os.PathLike[str]) -> pluggy.HookRelay:
+    def gethookproxy(self, fspath: os.PathLike[str]) -> pluggy.HookRelay | FSHookProxy:
         # Optimization: Path(Path(...)) is much slower than isinstance.
         path = fspath if isinstance(fspath, Path) else Path(fspath)
         pm = self.config.pluginmanager
@@ -750,10 +750,10 @@ class Session(nodes.Collector):
         # hooks with all conftest.py files.
         my_conftestmodules = pm._getconftestmodules(path)
         remove_mods = pm._conftest_plugins.difference(my_conftestmodules)
-        proxy: pluggy.HookRelay
+        proxy: pluggy.HookRelay | FSHookProxy
         if remove_mods:
             # One or more conftests are not in use at this path.
-            proxy = FSHookProxy(pm, remove_mods)  # type: ignore[assignment]
+            proxy = FSHookProxy(pm, remove_mods)
         else:
             # All plugins are active for this fspath.
             proxy = self.config.hook

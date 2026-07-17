@@ -44,7 +44,9 @@ if TYPE_CHECKING:
     from typing_extensions import Self
 
     # Imported here due to circular import.
+    from _pytest.main import FSHookProxy
     from _pytest.main import Session
+    from _pytest.python import CallSpec2
 
 
 SEP = "/"
@@ -228,7 +230,7 @@ class Node(abc.ABC, metaclass=NodeMeta):
         return cls._create(parent=parent, **kw)
 
     @property
-    def ihook(self) -> pluggy.HookRelay:
+    def ihook(self) -> pluggy.HookRelay | FSHookProxy:
         """Path-sensitive hook proxy used to call pytest hooks."""
         return self.session.gethookproxy(self.path)
 
@@ -654,6 +656,10 @@ class Item(Node, abc.ABC):
     """
 
     nextitem = None
+
+    #: Parametrization data when this item comes from ``@pytest.mark.parametrize``.
+    #: ``None`` for non-parametrized items (including non-Function items).
+    callspec: CallSpec2 | None = None
 
     def __init__(
         self,
