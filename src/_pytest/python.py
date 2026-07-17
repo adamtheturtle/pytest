@@ -476,7 +476,9 @@ class PyCollector(PyobjMixin, nodes.Collector, abc.ABC):
         self.ihook.pytest_generate_tests.call_extra(methods, dict(metafunc=metafunc))
 
         if not metafunc._calls:
-            yield Function.from_parent(self, name=name, fixtureinfo=fixtureinfo)
+            # Reuse the definition node as the sole Function item to avoid
+            # constructing a second Function with identical state.
+            yield definition.as_function()
         else:
             metafunc._recompute_direct_params_indices()
             # Direct parametrizations taking place in module/class-specific
@@ -486,6 +488,7 @@ class PyCollector(PyobjMixin, nodes.Collector, abc.ABC):
             # into making the closure using `ignore_args` arg to `getfixtureclosure`.
             fixtureinfo.prune_dependency_tree()
 
+            obj_markers = definition.own_markers
             for callspec in metafunc._calls:
                 subname = f"{name}[{callspec.id}]" if callspec._idlist else name
                 yield Function.from_parent(
@@ -495,6 +498,7 @@ class PyCollector(PyobjMixin, nodes.Collector, abc.ABC):
                     fixtureinfo=fixtureinfo,
                     keywords={callspec.id: True},
                     originalname=name,
+                    _obj_markers=obj_markers,
                 )
 
 
@@ -1407,22 +1411,48 @@ class Metafunc:
         # Create the new calls: if we are parametrize() multiple times (by applying the decorator
         # more than once) then we accumulate those calls generating the cartesian product
         # of all calls.
-        newcalls = []
-        for callspec in self._calls or [CallSpec2()]:
+        if not self._calls:
+            # Fast path: first parametrization builds CallSpec2 directly without
+            # copying empty maps via setmulti().
+            newcalls = []
             for param_index, (param_id, param_set) in enumerate(
                 zip(ids, parametersets, strict=True)
             ):
-                newcallspec = callspec.setmulti(
-                    argnames=argnames,
-                    valset=param_set.values,
-                    id=param_id,
-                    marks=param_set.marks,
-                    scope=scope_,
-                    param_index=param_index,
-                    nodeid=nodeid,
+                arg2scope = dict.fromkeys(argnames, scope_)
+                params = dict(zip(argnames, param_set.values, strict=True))
+                indices = dict.fromkeys(argnames, param_index)
+                idlist: tuple[str, ...] | list[str]
+                if param_id is HIDDEN_PARAM:
+                    idlist = ()
+                else:
+                    idlist = (param_id,)
+                newcalls.append(
+                    CallSpec2(
+                        params=params,
+                        indices=indices,
+                        _arg2scope=arg2scope,
+                        _idlist=idlist,
+                        marks=list(normalize_mark_list(param_set.marks)),
+                    )
                 )
-                newcalls.append(newcallspec)
-        self._calls = newcalls
+            self._calls = newcalls
+        else:
+            newcalls = []
+            for callspec in self._calls:
+                for param_index, (param_id, param_set) in enumerate(
+                    zip(ids, parametersets, strict=True)
+                ):
+                    newcallspec = callspec.setmulti(
+                        argnames=argnames,
+                        valset=param_set.values,
+                        id=param_id,
+                        marks=param_set.marks,
+                        scope=scope_,
+                        param_index=param_index,
+                        nodeid=nodeid,
+                    )
+                    newcalls.append(newcallspec)
+            self._calls = newcalls
 
     def _resolve_parameter_set_ids(
         self,
@@ -1616,6 +1646,8 @@ class Function(PyobjMixin, nodes.Item):
         session: Session | None = None,
         fixtureinfo: FuncFixtureInfo | None = None,
         originalname: str | None = None,
+        *,
+        _obj_markers: list[Mark] | None = None,
     ) -> None:
         super().__init__(name, parent, config=config, session=session)
 
@@ -1634,7 +1666,11 @@ class Function(PyobjMixin, nodes.Item):
         # Note: when FunctionDefinition is introduced, we should change ``originalname``
         # to a readonly property that returns FunctionDefinition.name.
 
-        self.own_markers.extend(get_unpacked_marks(self.obj))
+        if _obj_markers is None:
+            self.own_markers.extend(get_unpacked_marks(self.obj))
+        else:
+            # Reuse markers already resolved on FunctionDefinition (parametrized path).
+            self.own_markers.extend(_obj_markers)
         if callspec:
             self.callspec = callspec
             self.own_markers.extend(callspec.marks)
@@ -1654,7 +1690,9 @@ class Function(PyobjMixin, nodes.Item):
             fixtureinfo = fm.getfixtureinfo(self, self.obj, self.cls)
         self._fixtureinfo: FuncFixtureInfo = fixtureinfo
         self.fixturenames = fixtureinfo.names_closure
-        self._initrequest()
+        # Defer TopRequest creation until setup/run; collection never needs it.
+        self.funcargs: dict[str, object] = {}
+        self._request_value: fixtures.TopRequest | Literal[False] | None = None
 
     # todo: determine sound type limitations
     @classmethod
@@ -1663,8 +1701,21 @@ class Function(PyobjMixin, nodes.Item):
         return super().from_parent(parent=parent, **kw)
 
     def _initrequest(self) -> None:
-        self.funcargs: dict[str, object] = {}
-        self._request = fixtures.TopRequest(self, _ispytest=True)
+        self.funcargs = {}
+        self._request_value = fixtures.TopRequest(self, _ispytest=True)
+
+    @property
+    def _request(self) -> fixtures.TopRequest | Literal[False]:
+        value = self._request_value
+        if value is None:
+            self._initrequest()
+            assert self._request_value is not None and self._request_value is not False
+            return self._request_value
+        return value
+
+    @_request.setter
+    def _request(self, value: fixtures.TopRequest | Literal[False]) -> None:
+        self._request_value = value
 
     @property
     def function(self):
@@ -1758,7 +1809,23 @@ class FunctionDefinition(Function):
     def _initrequest(self) -> None:
         # FunctionDefinition is never executed as a test; skip creating TopRequest.
         self.funcargs = {}
-        self._request = False  # type: ignore[assignment]
+        self._request_value = False
+
+    def as_function(self) -> Function:
+        """Promote this definition to a runnable :class:`Function`.
+
+        Used when a test has a single (non-parametrized) invocation, so we can
+        reuse this node instead of constructing a second Function.
+        """
+        self.__class__ = Function
+        # Keep deferred request initialization used by Function.
+        self._request_value = None
+        # FunctionDefinition was constructed with callobj=raw function. Clear
+        # cached obj/instance so method tests bind to a fresh class instance
+        # via Function._getobj(), matching a normally constructed Function.
+        self.__dict__.pop("_obj", None)
+        self.__dict__.pop("_instance", None)
+        return self
 
     def runtest(self) -> None:
         raise RuntimeError("function definitions are not supposed to be run as tests")
