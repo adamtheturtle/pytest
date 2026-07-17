@@ -786,6 +786,41 @@ def test_hook_proxy(pytester: Pytester) -> None:
     )
 
 
+def test_root_collect_file_applies_inside_package(pytester: Pytester) -> None:
+    """Root ``pytest_collect_file`` must run for files under a Package.
+
+    Reproduces a gethookproxy cache bug where accessing the package path before
+    ``_loadconftestmodules`` cached an FSHookProxy that permanently stripped the
+    root conftest (Sybil-style collection under ``docs/source/``).
+    """
+    pytester.makeconftest(
+        """\
+        import pytest
+
+        class RstFile(pytest.File):
+            def collect(self):
+                yield RstItem.from_parent(self, name="from-rst")
+
+        class RstItem(pytest.Item):
+            def runtest(self):
+                pass
+
+            def reportinfo(self):
+                return self.path, 0, self.name
+
+        def pytest_collect_file(file_path, parent):
+            if file_path.suffix == ".rst":
+                return RstFile.from_parent(parent, path=file_path)
+        """
+    )
+    pkg = pytester.mkdir("pkg")
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "doc.rst").write_text("hello\n", encoding="utf-8")
+    result = pytester.runpytest("--collect-only", "-q")
+    result.stdout.fnmatch_lines(["*pkg/doc.rst::from-rst*"])
+    assert result.ret == 0
+
+
 def test_conftest_fixture_scoping_with_testpaths_outside_rootdir(
     pytester: Pytester,
 ) -> None:

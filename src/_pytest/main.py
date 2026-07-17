@@ -742,10 +742,21 @@ class Session(nodes.Collector):
         if generation != self._hookproxy_generation:
             self._hookproxy_cache.clear()
             self._hookproxy_generation = generation
-        try:
-            return self._hookproxy_cache[path]
-        except KeyError:
-            pass
+
+        # Conftest applicability for a path is only known after
+        # ``_loadconftestmodules()`` has recorded that directory. Caching before
+        # that can store an FSHookProxy that strips already-imported root
+        # conftests: associating them with a new directory does not grow
+        # ``_conftest_plugins``, so generation-based invalidation would never
+        # run (e.g. Package dirs under a root Sybil/conftest collect_file).
+        directory = pm._get_directory(path)
+        cacheable = directory in pm._dirpath2confmods
+        if cacheable:
+            try:
+                return self._hookproxy_cache[path]
+            except KeyError:
+                pass
+
         # Check if we have the common case of running
         # hooks with all conftest.py files.
         my_conftestmodules = pm._getconftestmodules(path)
@@ -757,7 +768,8 @@ class Session(nodes.Collector):
         else:
             # All plugins are active for this fspath.
             proxy = self.config.hook
-        self._hookproxy_cache[path] = proxy
+        if cacheable:
+            self._hookproxy_cache[path] = proxy
         return proxy
 
     def _collect_path(
