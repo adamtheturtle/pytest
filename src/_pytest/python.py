@@ -1690,10 +1690,13 @@ class Function(PyobjMixin, nodes.Item):
             fixtureinfo = fm.getfixtureinfo(self, self.obj, self.cls)
         self._fixtureinfo: FuncFixtureInfo = fixtureinfo
         self.fixturenames = fixtureinfo.names_closure
-        # Defer TopRequest creation until setup/run; collection never needs it.
-        # None means uninitialized or cleared after teardown.
+        # Defer TopRequest until first access (or setup/run). Collect-only paths
+        # that never touch ``_request`` avoid constructing it. Reading
+        # ``item._request`` after collection still works via lazy init.
+        # FunctionDefinition (not yet runnable) must not lazy-create a request.
         self.funcargs: dict[str, object] = {}
-        self._request: fixtures.TopRequest | None = None
+        self._request_impl: fixtures.TopRequest | None = None
+        self._request_cleared: bool = not getattr(self, "_runnable", True)
 
     # todo: determine sound type limitations
     @classmethod
@@ -1703,15 +1706,38 @@ class Function(PyobjMixin, nodes.Item):
 
     def _initrequest(self) -> None:
         self.funcargs = {}
-        self._request = fixtures.TopRequest(self, _ispytest=True)
+        self._request_impl = fixtures.TopRequest(self, _ispytest=True)
+        self._request_cleared = False
+
+    @property
+    def _request(self) -> fixtures.TopRequest | None:
+        """Fixture request for this item.
+
+        Created lazily on first access so collection remains fast when the
+        request is unused, while remaining compatible with code that reads
+        ``item._request`` after collection. After teardown the runner sets this
+        to ``None`` (cleared); subsequent access returns ``None`` until
+        ``_initrequest()`` runs again (e.g. on re-run).
+        """
+        if self._request_cleared:
+            return None
+        if self._request_impl is None:
+            self._initrequest()
+        return self._request_impl
+
+    @_request.setter
+    def _request(self, value: fixtures.TopRequest | None) -> None:
+        if value is None:
+            self._request_impl = None
+            self._request_cleared = True
+        else:
+            self._request_impl = value
+            self._request_cleared = False
 
     def get_request(self) -> fixtures.TopRequest:
         """Return the fixture request, creating it on first use."""
         request = self._request
-        if request is None:
-            self._initrequest()
-            request = self._request
-            assert request is not None
+        assert request is not None
         return request
 
     @property
@@ -1810,9 +1836,11 @@ class FunctionDefinition(Function):
 
     def _initrequest(self) -> None:
         if not self._runnable:
-            # Definition-only nodes never execute; keep request unset.
+            # Definition-only nodes never execute; keep request unset and
+            # blocked so a stray ``_request`` read does not create TopRequest.
             self.funcargs = {}
-            self._request = None
+            self._request_impl = None
+            self._request_cleared = True
             return
         super()._initrequest()
 
@@ -1826,8 +1854,9 @@ class FunctionDefinition(Function):
         returning ``self`` is type-safe without mutating ``__class__``.
         """
         self._runnable = True
-        # Keep deferred request initialization used by Function.
-        self._request = None
+        # Allow lazy TopRequest creation on first ``_request`` access / setup.
+        self._request_impl = None
+        self._request_cleared = False
         # FunctionDefinition was constructed with callobj=raw function. Clear
         # cached obj/instance so method tests bind to a fresh class instance
         # via Function._getobj(), matching a normally constructed Function.

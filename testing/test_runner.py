@@ -512,8 +512,9 @@ class TestExecutionNonForked(BaseFunctionalTests):
         """
         )
         assert isinstance(item, pytest.Function)
-        # Request is deferred until setup/run.
-        assert item._request is None
+        # Request is deferred until first access / setup (not created yet).
+        assert item._request_impl is None
+        assert not item._request_cleared
         assert item.funcargs == {}
 
         try:
@@ -523,7 +524,9 @@ class TestExecutionNonForked(BaseFunctionalTests):
         else:
             assert False, "did not raise"
 
+        # Cleared after teardown; property must not recreate on read.
         assert item._request is None
+        assert item._request_cleared
         assert not item.funcargs
 
 
