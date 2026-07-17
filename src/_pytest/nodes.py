@@ -199,6 +199,9 @@ class Node(abc.ABC, metaclass=NodeMeta):
             if not self.parent:
                 raise TypeError("nodeid or parent must be provided")
             self._nodeid = self.parent.nodeid + "::" + self.name
+        # Cache hash: _nodeid is immutable and __hash__ is hot during collection
+        # (fixture reordering, dict/set membership).
+        self._hash = hash(self._nodeid)
 
         #: A place where plugins can store information on the node for their
         #: own use.
@@ -275,7 +278,7 @@ class Node(abc.ABC, metaclass=NodeMeta):
         return self._nodeid
 
     def __hash__(self) -> int:
-        return hash(self._nodeid)
+        return self._hash
 
     def setup(self) -> None:
         pass

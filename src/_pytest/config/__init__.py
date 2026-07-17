@@ -416,8 +416,13 @@ def _prepareconfig(
         raise
 
 
+@lru_cache(maxsize=8192)
 def _get_directory(path: pathlib.Path) -> pathlib.Path:
-    """Get the directory of a path - itself if already a directory."""
+    """Get the directory of a path - itself if already a directory.
+
+    Cached because this is called frequently during collection (via
+    ``gethookproxy`` / ``_getconftestmodules``) and ``Path.is_file()`` stats.
+    """
     if path.is_file():
         return path.parent
     else:

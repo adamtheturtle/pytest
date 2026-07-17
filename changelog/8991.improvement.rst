@@ -1,0 +1,6 @@
+Improved test collection performance for large suites.
+
+This includes caching path-sensitive hook proxies (invalidated when new
+conftests load), skipping fixture reordering when only function-scoped
+parametrization is used, faster fixture argument discovery for plain
+functions, and fewer filesystem stats while resolving conftest directories.

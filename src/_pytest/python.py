@@ -1755,6 +1755,11 @@ class FunctionDefinition(Function):
     """This class is a stop gap solution until we evolve to have actual function
     definition nodes and manage to get rid of ``metafunc``."""
 
+    def _initrequest(self) -> None:
+        # FunctionDefinition is never executed as a test; skip creating TopRequest.
+        self.funcargs = {}
+        self._request = False  # type: ignore[assignment]
+
     def runtest(self) -> None:
         raise RuntimeError("function definitions are not supposed to be run as tests")
 

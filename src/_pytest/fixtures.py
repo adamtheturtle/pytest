@@ -253,6 +253,19 @@ def get_param_argkeys(item: nodes.Item, scope: Scope) -> Iterator[ParamArgKey]:
 
 
 def reorder_items(items: Sequence[nodes.Item]) -> list[nodes.Item]:
+    # Fast path: function-scoped parametrization (the common case) does not
+    # affect collection order, so skip building argkey maps and the O(n)
+    # reordering algorithm.
+    for item in items:
+        try:
+            callspec: CallSpec2 = item.callspec  # type: ignore[attr-defined]
+        except AttributeError:
+            continue
+        if any(scope is not Scope.Function for scope in callspec._arg2scope.values()):
+            break
+    else:
+        return list(items)
+
     argkeys_by_item: dict[Scope, dict[nodes.Item, OrderedSet[ParamArgKey]]] = {}
     items_by_argkey: dict[Scope, dict[ParamArgKey, OrderedDict[nodes.Item, None]]] = {}
     for scope in HIGH_SCOPES:

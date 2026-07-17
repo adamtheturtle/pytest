@@ -12,6 +12,7 @@ from inspect import Signature
 import os
 from pathlib import Path
 import sys
+import types
 from typing import Any
 from typing import Final
 from typing import NoReturn
@@ -128,6 +129,29 @@ def getfuncargnames(
     # revisit fixtures. The fixture mechanism should ask the node for
     # the fixture names, and not try to obtain directly from the
     # function object well after collection has occurred.
+
+    # Fast path for plain Python functions: avoid inspect.signature(), which
+    # dominates getfuncargnames() cost during collection of large suites.
+    code = getattr(function, "__code__", None)
+    if (
+        code is not None
+        and isinstance(function, types.FunctionType)
+        and function.__defaults__ is None
+        and function.__kwdefaults__ is None
+        and not hasattr(function, "__wrapped__")
+        and not isinstance(function, functools.partial)
+        and (code.co_flags & (inspect.CO_VARARGS | inspect.CO_VARKEYWORDS)) == 0
+        and getattr(code, "co_posonlyargcount", 0) == 0
+        and getattr(code, "co_kwonlyargcount", 0) == 0
+    ):
+        arg_names = code.co_varnames[: code.co_argcount]
+        if not name:
+            name = function.__name__
+        if cls and not isinstance(
+            inspect.getattr_static(cls, name, default=None), staticmethod
+        ):
+            arg_names = arg_names[1:]
+        return tuple(arg_names)
 
     # The parameters attribute of a Signature object contains an
     # ordered mapping of parameter names to Parameter instances.  This

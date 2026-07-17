@@ -623,6 +623,11 @@ class Session(nodes.Collector):
         self.items: list[nodes.Item] = []
 
         self._bestrelpathcache: dict[Path, str] = _bestrelpath_cache(config.rootpath)
+        # Cache gethookproxy() results; invalidated when new conftests load
+        # (see _hookproxy_generation). Previously caching was removed (#2016)
+        # because it did not invalidate; generation-based caching is correct.
+        self._hookproxy_cache: dict[Path, pluggy.HookRelay] = {}
+        self._hookproxy_generation: int = -1
 
         self.config.pluginmanager.register(self, name="session")
 
@@ -732,6 +737,15 @@ class Session(nodes.Collector):
         # Optimization: Path(Path(...)) is much slower than isinstance.
         path = fspath if isinstance(fspath, Path) else Path(fspath)
         pm = self.config.pluginmanager
+        # Invalidate cache when new conftests are registered (#2016, #8991).
+        generation = len(pm._conftest_plugins)
+        if generation != self._hookproxy_generation:
+            self._hookproxy_cache.clear()
+            self._hookproxy_generation = generation
+        try:
+            return self._hookproxy_cache[path]
+        except KeyError:
+            pass
         # Check if we have the common case of running
         # hooks with all conftest.py files.
         my_conftestmodules = pm._getconftestmodules(path)
@@ -743,6 +757,7 @@ class Session(nodes.Collector):
         else:
             # All plugins are active for this fspath.
             proxy = self.config.hook
+        self._hookproxy_cache[path] = proxy
         return proxy
 
     def _collect_path(
