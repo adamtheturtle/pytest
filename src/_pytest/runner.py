@@ -13,6 +13,7 @@ from typing import cast
 from typing import final
 from typing import Generic
 from typing import Literal
+from typing import Protocol
 from typing import TYPE_CHECKING
 from typing import TypeVar
 
@@ -40,9 +41,30 @@ from _pytest.outcomes import TEST_OUTCOME
 if sys.version_info < (3, 11):
     from exceptiongroup import BaseExceptionGroup
 
+
 if TYPE_CHECKING:
+    from typing_extensions import Self
+
     from _pytest.main import Session
     from _pytest.terminal import TerminalReporter
+
+
+class _ItemWithRequest(Protocol):
+    """Items that support fixture requests (Function, DoctestItem, ...)."""
+
+    funcargs: dict[str, object] | None
+    _request: object | None
+
+    def _initrequest(self) -> None: ...
+
+
+def _request_item(item: Item) -> _ItemWithRequest | None:
+    """Return *item* narrowed to a request-supporting item, or ``None``."""
+    initrequest = getattr(item, "_initrequest", None)
+    if not callable(initrequest):
+        return None
+    return cast(_ItemWithRequest, item)
+
 
 #
 # pytest plugin hooks.
@@ -123,11 +145,11 @@ def pytest_runtest_protocol(item: Item, nextitem: Item | None) -> bool:
 def runtestprotocol(
     item: Item, log: bool = True, nextitem: Item | None = None
 ) -> list[TestReport]:
-    hasrequest = hasattr(item, "_request")
-    if hasrequest and not item._request:  # type: ignore[attr-defined]
+    request_item = _request_item(item)
+    if request_item is not None and not request_item._request:
         # This only happens if the item is re-run, as is done by
-        # pytest-rerunfailures.
-        item._initrequest()  # type: ignore[attr-defined]
+        # pytest-rerunfailures, or on first run when request init is deferred.
+        request_item._initrequest()
     try:
         rep = call_and_report(item, "setup", log)
         reports = [rep]
@@ -145,9 +167,9 @@ def runtestprotocol(
     finally:
         # After all teardown hooks have been called (or an exception was reraised)
         # want funcargs and request info to go away.
-        if hasrequest:
-            item._request = False  # type: ignore[attr-defined]
-            item.funcargs = None  # type: ignore[attr-defined]
+        if request_item is not None:
+            request_item._request = None
+            request_item.funcargs = None
     return reports
 
 

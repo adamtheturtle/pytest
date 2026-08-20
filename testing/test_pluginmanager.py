@@ -199,6 +199,46 @@ class TestPytestPluginInteractions:
         ihook_b = session.gethookproxy(pytester.path / "tests")
         assert ihook_a is not ihook_b
 
+    def test_hook_proxy_not_cached_before_directory_conftests_loaded(
+        self, pytester: Pytester
+    ) -> None:
+        """Do not cache gethookproxy before ``_loadconftestmodules``.
+
+        Premature caching stores an FSHookProxy that removes the root conftest.
+        Loading that directory later only associates the already-imported
+        conftest (``_conftest_plugins`` length unchanged), so generation-based
+        invalidation would never clear the stale proxy — Packages under a root
+        ``pytest_collect_file`` conftest would then miss collection.
+        """
+        pytester.makeconftest("")
+        pkg = pytester.mkdir("pkg")
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+
+        config = pytester.parseconfig()
+        session = Session.from_config(config)
+        pm = config.pluginmanager
+        pm._loadconftestmodules(
+            pytester.path,
+            importmode="prepend",
+            rootpath=pytester.path,
+            consider_namespace_packages=False,
+        )
+        assert pm._conftest_plugins
+
+        # Access before the package directory is associated with conftests.
+        assert pkg not in pm._dirpath2confmods
+        session.gethookproxy(pkg)
+
+        pm._loadconftestmodules(
+            pkg,
+            importmode="prepend",
+            rootpath=pytester.path,
+            consider_namespace_packages=False,
+        )
+        assert pkg in pm._dirpath2confmods
+        # No new conftest module was imported — only associated with pkg.
+        assert session.gethookproxy(pkg) is config.hook
+
     def test_hook_with_addoption(self, pytester: Pytester) -> None:
         """Test that hooks can be used in a call to pytest_addoption"""
         pytester.makepyfile(

@@ -6,7 +6,6 @@ import ast
 from collections import defaultdict
 from collections.abc import Callable
 from collections.abc import Iterable
-from collections.abc import Iterator
 from collections.abc import Sequence
 import errno
 import functools
@@ -541,13 +540,6 @@ BINOP_MAP = {
 }
 
 
-def traverse_node(node: ast.AST) -> Iterator[ast.AST]:
-    """Recursively yield node and all its children in depth-first order."""
-    yield node
-    for child in ast.iter_child_nodes(node):
-        yield from traverse_node(child)
-
-
 @functools.lru_cache(maxsize=1)
 def _get_assertion_exprs(src: bytes) -> dict[int, str]:
     """Return a mapping from {lineno: "assertion test expression"}."""
@@ -954,13 +946,12 @@ class AssertionRewriter(ast.NodeVisitor):
             variables = [ast.Name(name, ast.Store()) for name in self.variables]
             clear = ast.Assign(variables, ast.Constant(None))
             self.statements.append(clear)
-        # Fix locations (line numbers/column offsets).
+        # Fix locations (line numbers/column offsets). Prefer the C-accelerated
+        # fix_missing_locations after seeding each root statement from the assert.
         for stmt in self.statements:
-            for node in traverse_node(stmt):
-                if getattr(node, "lineno", None) is None:
-                    # apply the assertion location to all generated ast nodes without source location
-                    # and preserve the location of existing nodes or generated nodes with an correct location.
-                    ast.copy_location(node, assert_)
+            if getattr(stmt, "lineno", None) is None:
+                ast.copy_location(stmt, assert_)
+            ast.fix_missing_locations(stmt)
         return self.statements
 
     def visit_NamedExpr(self, name: ast.NamedExpr) -> tuple[ast.NamedExpr, str]:
